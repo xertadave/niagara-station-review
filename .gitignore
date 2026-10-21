@@ -1,0 +1,7 @@
+# reviews, uploaded backups, rules, settings and reports - never in the repo
+data/
+dist/
+__pycache__/
+*.pyc
+.venv/
+venv/

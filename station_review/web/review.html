@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Station Review – findings</title><link rel="stylesheet" href="/style.css"></head>
+<body>
+<header class="bar"><a class="logo" href="/"><img src="/logo.png" alt=""></a><span class="name" id="hname">Station Review</span>
+  <span class="org" id="hsite"></span><span class="pill" id="ver"></span></header>
+<main>
+  <div class="steps"><span>1 Upload backup</span><span class="on">2 Pre-check and review</span><span id="st3">3 Download report</span></div>
+
+  <div class="card">
+    <div class="card-h"><h2>Pre-check</h2><span class="muted" id="saved"></span></div>
+    <div class="sum" id="sum"></div>
+    <p class="muted">New findings need your decision. Findings marked <b>Carried</b> were included on an earlier review at this site and keep the wording you used then.
+      Findings you have already ruled out at this site, or that a rule covers, are under <b>Already decided</b> and are left out unless you tick Include.</p>
+    <label class="f">Site context for the report summary (optional, e.g. floor vacant and on trickle ventilation)
+      <textarea id="note"></textarea></label>
+  </div>
+
+  <div class="row" style="margin:6px 0 12px">
+    <span class="muted">Show:</span>
+    <button class="btn small sec" data-f="all">All</button><button class="btn small sec" data-f="undecided">To decide</button>
+    <button class="btn small sec" data-f="include">Included</button><button class="btn small sec" data-f="disregard">Disregarded</button>
+    <button class="btn small sec" id="openall">Open all</button>
+  </div>
+
+  <h2>Actions</h2><div id="actions"></div>
+  <h2>Status</h2><div id="status"></div>
+  <h2>Already decided</h2><div id="prec"></div>
+
+  <div class="card" style="margin-top:18px">
+    <div class="card-h"><h2>Report</h2></div>
+    <p class="muted" id="repmsg">Build the Word report from your decisions. Only items ticked Include go in; disregarded items marked “list as reviewed” go in the Reviewed – No Action Required table.</p>
+    <p class="row"><button class="btn" id="build">Build report</button><a class="btn sec hidden" id="dl" href="#">Download report</a></p>
+  </div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const RID = new URLSearchParams(location.search).get('id');
+const PRI = ['High', 'Medium', 'Low', 'Review'], RANK = {High: 0, Medium: 1, Low: 2, Review: 3};
+const STAT = ['Open', 'Confirm with site', 'Client decision', 'Scheduled', 'Completed during review'];
+const RES = ['Satisfactory', 'See actions', 'Information'];
+const SCOPE = {report: 'This report only', site: 'This site', all: 'All sites'};
+let items = new Map(), cards = new Map(), filter = 'all';
+async function api(u, o) { const r = await fetch(u, o); const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || r.statusText); return j; }
+function toast(m, bad) { const t = document.createElement('div'); t.className = 'toast' + (bad ? ' bad' : ' good'); t.textContent = m; document.body.append(t); setTimeout(() => t.remove(), 3000); }
+const needsReason = d => d.decision === 'disregard' && d.kind !== 'precedent' && !(d.disregardReason || '').trim();
+
+async function save(id, patch) {
+  Object.assign(items.get(id), patch); refresh(id); tally();
+  try { await api(`/api/review/${RID}/item/${id}`, {method: 'POST', body: JSON.stringify(patch)});
+    const s = cards.get(id).querySelectorAll('.saved'); s.forEach(x => { x.textContent = 'Saved'; setTimeout(() => x.textContent = '', 1400); }); }
+  catch (e) { toast('Not saved: ' + e.message, 1); }
+}
+function el(tag, attrs = {}, ...kids) { const e = document.createElement(tag); for (const [k, v] of Object.entries(attrs)) { if (k === 'text') e.textContent = v; else if (k === 'html') e.innerHTML = v; else e.setAttribute(k, v); } kids.flat().forEach(k => k && e.append(k)); return e; }
+function sel(id, opts, cur, onch) { const s = el('select', {id}); opts.forEach(o => s.append(el('option', {value: o, text: o}))); s.value = cur || opts[0]; s.onchange = () => onch(s.value); return s; }
+
+function build(d) {
+  const kind = d.kind, isAct = (d.was_kind || kind) === 'action';
+  const c = el('div', {class: 'fcard', 'data-kind': kind});
+  const inc = el('button', {class: 'inc', 'aria-pressed': 'false', text: 'Include'});
+  const dis = el('button', {class: 'dis', 'aria-pressed': 'false', text: 'Disregard'});
+  inc.onclick = () => save(d.id, {decision: items.get(d.id).decision === 'include' ? 'undecided' : 'include'});
+  dis.onclick = () => { const was = items.get(d.id).decision === 'disregard'; save(d.id, {decision: was ? 'undecided' : 'disregard'}); if (!was) { toggle(d.id, true); setTimeout(() => c.querySelector('.why textarea')?.focus(), 30); } };
+  const ttl = el('button', {class: 'ttl', text: d.title}); ttl.onclick = () => toggle(d.id);
+  const meta = el('div', {class: 'meta'}, el('span', {class: 'pill', 'data-r': 'pill'}), el('span', {class: 'chip', text: d.area || ''}),
+    d.where ? el('span', {class: 'chip', text: d.where}) : null, d.audience === 'internal' ? el('span', {class: 'chip int', text: 'Internal only'}) : null,
+    d.carried ? el('span', {class: 'chip car', text: 'Carried from ' + d.carried}) : null,
+    d.wordingCarried ? el('span', {class: 'chip need', text: 'Wording carried – check the details'}) : null, el('span', {class: 'chip', 'data-r': 'stat'}),
+    el('span', {class: 'chip need', 'data-r': 'need', text: 'Reason needed'}), el('span', {class: 'chip muted', text: d.match}));
+  c.append(el('div', {class: 'fhead'}, el('div', {}, meta, ttl), el('div', {class: 'dec'}, inc, dis)));
+  const body = el('div', {class: 'fbody'}); body.hidden = true;
+  if (kind !== 'precedent') {
+    const why = el('textarea', {placeholder: 'Why is this not needed? Give the logic so it can be applied next time.'}); why.value = d.disregardReason || '';
+    why.onchange = () => save(d.id, {disregardReason: why.value});
+    const applies = el('input', {type: 'text'}); applies.value = d.ruleApplies || d.match; applies.onchange = () => save(d.id, {ruleApplies: applies.value});
+    const rtext = el('textarea'); rtext.value = d.ruleText || `Don't raise "${d.title}"`; rtext.onchange = () => save(d.id, {ruleText: rtext.value});
+    const lst = el('input', {type: 'checkbox'}); lst.checked = !!d.listAsReviewed; lst.onchange = () => save(d.id, {listAsReviewed: lst.checked});
+    const scope = el('select'); Object.entries(SCOPE).forEach(([v, t]) => scope.append(el('option', {value: v, text: t}))); scope.value = d.ruleScope || 'report';
+    scope.onchange = () => save(d.id, {ruleScope: scope.value});
+    const ruleBox = el('div', {class: 'g2', 'data-r': 'rulebox'},
+      el('label', {class: 'f'}, el('span', {class: 'lbl', text: 'Rule applies to checks'}), applies),
+      el('label', {class: 'f'}, el('span', {class: 'lbl', text: 'Rule'}), rtext));
+    body.append(el('div', {class: 'why', 'data-r': 'why'}, el('span', {class: 'lbl', text: 'Why it is not required'}), why,
+      el('div', {class: 'row'}, el('label', {class: 'f'}, el('span', {class: 'lbl', text: 'Apply this logic to'}), scope),
+        el('label', {class: 'row'}, lst, el('span', {text: 'List in the report as reviewed, not required'}))), ruleBox,
+      el('span', {class: 'muted', text: '"This site" or "All sites" saves a rule that is checked before the same finding is raised on any later review.'}), el('span', {class: 'saved'})));
+  } else {
+    body.append(el('div', {class: 'why'}, el('span', {class: 'lbl', text: 'Already decided'}), el('div', {text: d.disregardReason || ''})));
+  }
+  body.append(el('div', {}, el('span', {class: 'lbl', text: 'What was found'}), el('div', {text: d.observed || ''})));
+  if ((d.evidence || []).length) body.append(el('div', {}, el('span', {class: 'lbl', text: 'Evidence in the station'}), el('ul', {class: 'ev'}, d.evidence.map(x => el('li', {text: x})))));
+  if (d.readings) body.append(el('ul', {class: 'ev'}, d.readings.map(r => el('li', {text: `${r.point}: ${r.fault ? 'FAULT ' : ''}${Number(r.value).toFixed(1)} ${r.units}`}))));
+  if (isAct && (d.impact || (d.steps || []).length)) body.append(el('div', {class: 'g2'},
+    el('div', {}, el('span', {class: 'lbl', text: 'Why it matters'}), el('div', {text: d.impact || ''})),
+    el('div', {}, el('span', {class: 'lbl', text: 'Steps to fix'}), el('ol', {}, (d.steps || []).map(x => el('li', {text: x}))))));
+  const cw = el('textarea'); cw.value = d.clientText || ''; cw.onchange = () => save(d.id, {clientText: cw.value});
+  const nt = el('textarea', {placeholder: 'Notes for later, e.g. already fixed on site'}); nt.value = d.notes || ''; nt.onchange = () => save(d.id, {notes: nt.value});
+  body.append(el('div', {class: 'g2'}, el('label', {class: 'f'}, el('span', {class: 'lbl', text: 'Report wording'}), cw), el('label', {class: 'f'}, el('span', {class: 'lbl', text: 'Notes'}), nt)));
+  const ctl = el('div', {class: 'row'});
+  if (isAct) {
+    ctl.append(el('label', {class: 'f'}, el('span', {class: 'lbl', text: 'Priority'}), sel('pr-' + d.id, PRI, d.priority, v => save(d.id, {priority: v}))));
+    ctl.append(el('label', {class: 'f'}, el('span', {class: 'lbl', text: 'Status'}), sel('st-' + d.id, STAT, d.status, v => save(d.id, {status: v}))));
+  } else ctl.append(el('label', {class: 'f'}, el('span', {class: 'lbl', text: 'Result in report'}), sel('rs-' + d.id, RES, d.result, v => save(d.id, {result: v}))));
+  ctl.append(el('span', {class: 'saved'}));
+  body.append(ctl); c.append(body); cards.set(d.id, c); return c;
+}
+function toggle(id, force) { const c = cards.get(id); const o = force ?? !c.classList.contains('open'); c.classList.toggle('open', o); c.querySelector('.fbody').hidden = !o; }
+function refresh(id) {
+  const d = items.get(id), c = cards.get(id), isAct = (d.was_kind || d.kind) === 'action';
+  c.dataset.d = d.decision || 'undecided'; c.dataset.p = isAct ? d.priority : '';
+  c.querySelector('.inc').setAttribute('aria-pressed', d.decision === 'include'); c.querySelector('.dis').setAttribute('aria-pressed', d.decision === 'disregard');
+  const p = c.querySelector('[data-r=pill]'); p.textContent = d.kind === 'precedent' ? 'Decided' : (isAct ? d.priority : 'Status'); p.className = 'pill p-' + p.textContent;
+  const st = c.querySelector('[data-r=stat]'); st.textContent = isAct ? d.status : (d.result || ''); st.hidden = !st.textContent;
+  c.querySelector('[data-r=need]').hidden = !needsReason(d);
+  const why = c.querySelector('[data-r=why]'); if (why && d.kind !== 'precedent') why.hidden = d.decision !== 'disregard';
+  const rb = c.querySelector('[data-r=rulebox]'); if (rb) rb.hidden = !['site', 'all'].includes(d.ruleScope);
+  const w = c.querySelector('.why textarea'); if (w && d.kind !== 'precedent') w.classList.toggle('missing', needsReason(d));
+  c.hidden = !(filter === 'all' || (d.decision || 'undecided') === filter);
+}
+function tally() {
+  const v = [...items.values()];
+  const n = k => v.filter(d => (d.decision || 'undecided') === k).length;
+  const fresh = v.filter(d => d.kind !== 'precedent' && !d.carried).length, car = v.filter(d => d.carried).length, pre = v.filter(d => d.kind === 'precedent').length;
+  const why = v.filter(needsReason).length;
+  $('#sum').innerHTML = `<div class="k"><b>${v.filter(d => d.kind === 'action').length}</b>actions found</div><div class="k"><b>${fresh}</b>new</div><div class="k"><b>${car}</b>carried</div>
+    <div class="k"><b>${pre}</b>already decided</div><div class="k"><b>${n('include')}</b>included</div><div class="k"><b>${n('undecided')}</b>to decide</div>
+    ${why ? `<div class="k why"><b>${why}</b>need a reason</div>` : ''}`;
+}
+async function load() {
+  const j = await api('/api/review/' + RID);
+  const m = j.meta;
+  $('#ver').textContent = 'v' + j.version; $('#hname').textContent = m.station; $('#hsite').textContent = m.site;
+  $('#saved').textContent = `Backup saved ${m.saved || '?'} · Niagara ${m.niagara || '?'}`; $('#note').value = m.summary_note || '';
+  document.title = m.station + ' – Station Review';
+  j.items.forEach(d => items.set(d.id, d));
+  const acts = j.items.filter(d => d.kind === 'action').sort((a, b) => (RANK[a.priority] - RANK[b.priority]) || a.order - b.order);
+  const sts = j.items.filter(d => d.kind === 'status'), pre = j.items.filter(d => d.kind === 'precedent');
+  for (const [box, L] of [[$('#actions'), acts], [$('#status'), sts], [$('#prec'), pre]]) {
+    if (!L.length) box.append(el('p', {class: 'muted', text: 'None.'}));
+    L.forEach(d => { box.append(build(d)); refresh(d.id); });
+  }
+  tally();
+  if (m.state === 'issued') { $('#dl').href = `/api/review/${RID}/report.docx`; $('#dl').classList.remove('hidden'); }
+}
+$('#note').onchange = () => api(`/api/review/${RID}/meta`, {method: 'POST', body: JSON.stringify({summary_note: $('#note').value})}).then(() => toast('Saved'));
+document.querySelectorAll('[data-f]').forEach(b => b.onclick = () => { filter = b.dataset.f; items.forEach((_, id) => refresh(id)); });
+$('#openall').onclick = () => { const any = [...cards.values()].some(c => !c.classList.contains('open') && !c.hidden); cards.forEach((c, id) => { if (!c.hidden) toggle(id, any); }); };
+$('#build').onclick = async () => {
+  const und = [...items.values()].filter(d => d.decision === 'undecided').length;
+  $('#build').disabled = true; $('#repmsg').textContent = 'Building…';
+  try { const j = await api(`/api/review/${RID}/report`, {method: 'POST'});
+    $('#dl').href = j.url; $('#dl').classList.remove('hidden'); $('#st3').classList.add('on');
+    $('#repmsg').textContent = und ? `Report built. ${und} item(s) are still undecided and were left out.` : 'Report built from your decisions.'; }
+  catch (e) { $('#repmsg').innerHTML = '<span class="err">' + esc(e.message) + '</span>'; }
+  $('#build').disabled = false;
+};
+load().catch(e => document.querySelector('main').innerHTML = '<div class="notice">' + esc(e.message) + ' – <a href="/">back</a></div>');
+</script>
+</body></html>

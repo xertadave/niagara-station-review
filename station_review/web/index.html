@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Station Review</title><link rel="stylesheet" href="/style.css"></head>
+<body>
+<header class="bar"><span class="logo"><img src="/logo.png" alt=""></span><span class="name">Station Review</span>
+  <span class="org">Niagara station backup → PPM report</span><span class="pill" id="ver"></span></header>
+<main>
+  <div class="steps"><span class="on">1 Upload backup</span><span>2 Pre-check and review</span><span>3 Download report</span></div>
+
+  <div class="card">
+    <div class="card-h"><h2>New review</h2><span class="muted">One station backup (.bog) per review</span></div>
+    <div class="form">
+      <label class="f">Site name<input type="text" id="site" list="sites" placeholder="Type or pick a site"></label>
+      <datalist id="sites"></datalist>
+    </div>
+    <p class="muted">The site name links this review to earlier reviews and rules for the same site, so decisions you have already made are not asked again.</p>
+    <div class="drop" id="drop"><strong>Drop a station .bog file here</strong><br>or click to choose one<input type="file" id="file" accept=".bog,.xml" class="hidden"></div>
+    <p id="upmsg" class="muted"></p>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><h2>Reviews</h2><span class="muted">Newest first</span></div>
+    <table class="t"><thead><tr><th>Site</th><th>Station</th><th>Backup saved</th><th>Decisions</th><th>Report</th><th></th></tr></thead>
+      <tbody id="reviews"><tr><td colspan="6" class="muted">No reviews yet.</td></tr></tbody></table>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><h2>Rules</h2><span class="muted">Learnt from your Disregard decisions; checked before anything is raised</span></div>
+    <table class="t"><thead><tr><th>Applies to</th><th>Scope</th><th>Rule</th><th>Reason</th><th>On</th><th></th></tr></thead>
+      <tbody id="rules"><tr><td colspan="6" class="muted">No rules yet.</td></tr></tbody></table>
+    <details><summary>Add a rule</summary>
+      <div class="form" style="margin-top:8px">
+        <label class="f">Applies to checks<input type="text" id="nr-applies" placeholder="e.g. SCHED-EMPTY or OVR:Balancing"></label>
+        <label class="f">Scope<select id="nr-scope"><option value="all">All sites</option><option value="site">One site</option></select></label>
+        <label class="f">Site (if one site)<input type="text" id="nr-site" list="sites"></label>
+      </div>
+      <label class="f" style="margin-top:8px">Rule<textarea id="nr-text"></textarea></label>
+      <label class="f">Reason<textarea id="nr-reason"></textarea></label>
+      <p><button class="btn small" id="nr-add">Add rule</button></p>
+    </details>
+    <details><summary>Import / export rules</summary>
+      <p class="muted">Export saves every rule as a file. Import adds rules from such a file; rules for one site whose site is blank or {{SITE}} are given the site chosen here.</p>
+      <div class="row"><a class="btn small" href="/api/rules/export">Export rules</a>
+        <input type="text" id="imp-site" list="sites" placeholder="Site for imported site rules">
+        <input type="file" id="imp-file" accept=".json"><button class="btn small" id="imp-go">Import</button></div>
+    </details>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><h2>Report settings</h2></div>
+    <div class="form">
+      <label class="f">Report title<input type="text" id="s-title"></label>
+      <label class="f">Team name (summary text)<input type="text" id="s-team"></label>
+      <label class="f">Contact name<input type="text" id="s-author" placeholder="Leave blank to keep the template's"></label>
+      <label class="f">Contact role<input type="text" id="s-role"></label>
+    </div>
+    <p class="row" style="margin-top:10px"><button class="btn small" id="s-save">Save settings</button><span id="s-msg" class="muted"></span></p>
+    <p class="muted" id="tpl-state"></p>
+    <div class="row"><input type="file" id="tpl" accept=".docx"><button class="btn small sec" id="tpl-up">Use this Word template</button>
+      <button class="btn small sec" id="tpl-clear">Go back to the built-in template</button></div>
+  </div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+async function api(u, o) { const r = await fetch(u, o); const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || r.statusText); return j; }
+function toast(m, bad) { const t = document.createElement('div'); t.className = 'toast' + (bad ? ' bad' : ' good'); t.textContent = m; document.body.append(t); setTimeout(() => t.remove(), 3500); }
+
+async function info() {
+  const j = await api('/api/info');
+  $('#ver').textContent = 'v' + j.version;
+  $('#sites').innerHTML = j.sites.map(s => `<option value="${esc(s)}">`).join('');
+  const s = j.settings;
+  $('#s-title').value = s.report_title; $('#s-team').value = s.company_team; $('#s-author').value = s.author; $('#s-role').value = s.role;
+  $('#tpl-state').textContent = j.own_template ? 'Using your own Word template.' : 'Using the built-in Word template.';
+}
+async function reviews() {
+  const L = await api('/api/reviews');
+  if (!L.length) return;
+  $('#reviews').innerHTML = L.map(r => `<tr><td>${esc(r.site)}</td><td><a href="/review?id=${r.id}">${esc(r.station)}</a></td><td>${esc(r.saved || '')}</td>
+    <td>${r.counts.include} in · ${r.counts.disregard} out · <b>${r.counts.undecided}</b> to decide</td>
+    <td>${r.has_report ? `<a href="/api/review/${r.id}/report.docx">Download</a>` : '<span class="muted">not built</span>'}</td>
+    <td><button class="btn small sec" data-del="${r.id}">Delete</button></td></tr>`).join('');
+  document.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
+    if (b.dataset.sure) { await api(`/api/review/${b.dataset.del}/delete`, {method: 'POST'}); reviews(); }
+    else { b.dataset.sure = 1; b.textContent = 'Click again to delete'; }
+  });
+}
+async function rules() {
+  const R = await api('/api/rules');
+  if (!R.length) { $('#rules').innerHTML = '<tr><td colspan="6" class="muted">No rules yet.</td></tr>'; return; }
+  $('#rules').innerHTML = R.map(r => `<tr><td><input type="text" value="${esc((r.applies||[]).join(', '))}" data-f="applies" data-id="${r.id}"></td>
+    <td>${r.scope === 'all' ? 'All sites' : esc(r.site)}</td>
+    <td><textarea data-f="text" data-id="${r.id}">${esc(r.text)}</textarea></td><td class="muted">${esc(r.reason || '')}</td>
+    <td><input type="checkbox" data-f="active" data-id="${r.id}" ${r.active !== false ? 'checked' : ''}></td>
+    <td><button class="btn small sec" data-rdel="${r.id}">Delete</button></td></tr>`).join('');
+  document.querySelectorAll('#rules [data-f]').forEach(el => el.onchange = async () => {
+    const v = el.type === 'checkbox' ? el.checked : el.value;
+    try { await api('/api/rules/' + el.dataset.id, {method: 'POST', body: JSON.stringify({[el.dataset.f]: v})}); toast('Rule saved'); } catch (e) { toast(e.message, 1); }
+  });
+  document.querySelectorAll('[data-rdel]').forEach(b => b.onclick = async () => {
+    if (!b.dataset.sure) { b.dataset.sure = 1; b.textContent = 'Click again'; return; }
+    await api('/api/rules/' + b.dataset.rdel, {method: 'POST', body: JSON.stringify({delete: true})}); rules();
+  });
+}
+async function upload(f) {
+  const site = $('#site').value.trim();
+  if (!site) { toast('Enter the site name first', 1); $('#site').focus(); return; }
+  const fd = new FormData(); fd.append('site', site); fd.append('file', f);
+  $('#upmsg').textContent = 'Reading ' + f.name + '…';
+  try { const j = await api('/api/upload', {method: 'POST', body: fd}); location.href = '/review?id=' + j.id; }
+  catch (e) { $('#upmsg').innerHTML = '<span class="err">' + esc(e.message) + '</span>'; }
+}
+const drop = $('#drop');
+drop.onclick = () => $('#file').click();
+$('#file').onchange = e => e.target.files[0] && upload(e.target.files[0]);
+drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
+drop.ondragleave = () => drop.classList.remove('over');
+drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); e.dataTransfer.files[0] && upload(e.dataTransfer.files[0]); };
+$('#nr-add').onclick = async () => {
+  try { await api('/api/rules', {method: 'POST', body: JSON.stringify({applies: $('#nr-applies').value, scope: $('#nr-scope').value, site: $('#nr-site').value, text: $('#nr-text').value, reason: $('#nr-reason').value})});
+    toast('Rule added'); rules(); } catch (e) { toast(e.message, 1); }
+};
+$('#imp-go').onclick = async () => {
+  const f = $('#imp-file').files[0]; if (!f) return toast('Choose a rules file', 1);
+  try { const R = JSON.parse(await f.text()); const j = await api('/api/rules/import', {method: 'POST', body: JSON.stringify({rules: Array.isArray(R) ? R : R.rules, site: $('#imp-site').value})});
+    toast(j.added + ' rules imported'); rules(); info(); } catch (e) { toast(e.message, 1); }
+};
+$('#s-save').onclick = async () => {
+  await api('/api/settings', {method: 'POST', body: JSON.stringify({report_title: $('#s-title').value, company_team: $('#s-team').value, author: $('#s-author').value, role: $('#s-role').value})});
+  $('#s-msg').textContent = 'Saved'; setTimeout(() => $('#s-msg').textContent = '', 2000);
+};
+$('#tpl-up').onclick = async () => {
+  const f = $('#tpl').files[0]; if (!f) return toast('Choose a .docx file', 1);
+  const fd = new FormData(); fd.append('file', f);
+  try { await api('/api/template', {method: 'POST', body: fd}); toast('Template saved'); info(); } catch (e) { toast(e.message, 1); }
+};
+$('#tpl-clear').onclick = async () => { await api('/api/template/clear', {method: 'POST'}); toast('Built-in template restored'); info(); };
+info(); reviews(); rules();
+</script>
+</body></html>
